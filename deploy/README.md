@@ -93,13 +93,21 @@ applies.
 Despite the name, only one port is involved. It is being used for multiple
 paths, not multiple ports.
 
-`dest` is deliberately left unset, which passes the path through unchanged.
-**This is the opposite of the status list**, where `VIRTUAL_DEST=/` strips the
-prefix. The difference is that the status list namespaces itself internally with
-`url_prefix`, while this service expects to own a host root and builds absolute
-URLs from `VERIFIER_PUBLICURL`. Setting `dest: "/"` here would route
-`/verifier/wallet/...` to `/wallet/...` while the signed request object still
-told the wallet to use the prefixed URL.
+Each path sets `dest` to strip the `/verifier` prefix, so `/verifier/wallet/x`
+reaches the container as `/wallet/x`. The application serves `/ui`, `/wallet`
+and `/utilities` at its root and knows nothing about the prefix, which is the
+same arrangement as every other service here.
+
+This was got wrong first time on the reasoning that the service builds absolute
+URLs from `VERIFIER_PUBLICURL` and therefore needed the path preserved. Those
+two are independent: the prefix in generated URLs comes from `publicUrl`, not
+from the incoming request path. Leaving `dest` unset routes perfectly and then
+404s inside the application, which reads as a routing fault and is not one. The
+tell is in the nginx access log, which records the upstream it reached:
+
+    "GET /verifier/wallet/public-keys.json" 404 "172.20.0.9:8080"
+
+An unrouted path would never name an upstream.
 
 Verified before writing this: nginx-proxy 1.11 is what runs on the box, and its
 template references `VIRTUAL_HOST_MULTIPORTS`.

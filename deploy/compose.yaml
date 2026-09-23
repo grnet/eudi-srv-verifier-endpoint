@@ -7,21 +7,10 @@
 name: eudiw-verifier
 
 services:
-  # Generates the access certificate keystore on first deploy, then leaves it
-  # alone. Same shape as eudi-srv-wallet-provider's keystore-init.
-  #
-  # Skips if the keystore exists. Its public key is published at
-  # /wallet/public-keys.json and the wallet uses it to verify every request
-  # object, so regenerating it would invalidate anything already issued.
-  #
-  # It generates a small two-level chain, not a self-signed certificate.
-  # AccessCertificate (VerifierConfig.kt:231) rejects self-signed outright, with
-  # "access certificate must not be self-signed", regardless of clientIdPrefix.
-  # Upstream's dev keystore is a chain for the same reason.
-  #
-  # The CA here is a local convenience, not a trust anchor. Under
-  # pre-registered the chain is never sent to the wallet, only the key's `kid`.
-  # See deploy/README.md.
+  # Generates the access certificate keystore on first deploy, skips thereafter.
+  # Its public key verifies every request object, so replacing it invalidates
+  # anything already issued. Two-level chain because AccessCertificate
+  # (VerifierConfig.kt:231) rejects self-signed. See deploy/README.md.
   keystore-init:
     image: eclipse-temurin:25-jdk
     container_name: eudiw-verifier-keystore-init
@@ -79,8 +68,7 @@ services:
           -deststorepass "$${VERIFIER_KEYSTORE_PASSWORD}"
         chmod 644 /keystore/keystore.jks
         echo "done"
-    # No network: it only writes a volume. Joining proxy-net would make this
-    # fail before the edge exists, for no benefit.
+    # No network: it only writes a volume.
 
   verifier:
     depends_on:
@@ -92,46 +80,36 @@ services:
     expose:
       - "8080"
     environment:
-      # Three top-level prefixes (/ui, /utilities, /wallet) on one hostname.
-      # A container can only declare VIRTUAL_PATH once, so this is the
-      # VIRTUAL_HOST_MULTIPORTS form, which replaces VIRTUAL_HOST, VIRTUAL_PORT,
-      # VIRTUAL_PROTO, VIRTUAL_PATH and VIRTUAL_DEST rather than supplementing
-      # them. Do not add those alongside it.
+      # Three prefixes on one hostname; VIRTUAL_PATH can only be declared once.
+      # This replaces VIRTUAL_HOST, VIRTUAL_PORT, VIRTUAL_PROTO, VIRTUAL_PATH
+      # and VIRTUAL_DEST, so do not set those alongside it.
       #
-      # `dest` is deliberately unset. Its default passes the path through
-      # unchanged, which is what the application needs: it builds absolute URLs
-      # from VERIFIER_PUBLICURL and they have to match what the proxy routes.
-      # Setting dest: "/" would strip the prefix. Note this is the opposite of
-      # the status list, which wants VIRTUAL_DEST=/ because it namespaces itself.
+      # `dest` strips /verifier before forwarding: the app serves /ui, /wallet
+      # and /utilities at its root. Omitting it 404s in the app, not the proxy.
       VIRTUAL_HOST_MULTIPORTS: |-
         ${VERIFIER_HOST:?set in stack.env}:
           "${VERIFIER_PATH:?set in stack.env}/ui":
             port: 8080
+            dest: "/ui"
           "${VERIFIER_PATH}/utilities":
             port: 8080
+            dest: "/utilities"
           "${VERIFIER_PATH}/wallet":
             port: 8080
+            dest: "/wallet"
       LETSENCRYPT_HOST: ${VERIFIER_HOST}
       LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:?set in stack.env}
 
-      # Goes into request_uri and response_uri, which the wallet fetches and
-      # posts to. Verified that the path prefix survives: WalletApi builds these
-      # with DefaultUriBuilderFactory, which preserves the base URL's path.
+      # Signed into request_uri and response_uri, so not rewritable afterwards.
       VERIFIER_PUBLICURL: ${VERIFIER_PUBLIC_URL:?set in stack.env}
 
-      # pre-registered means the wallet knows the verifier out of band and the
-      # request object carries only a `kid`, not the certificate chain. The
-      # wallet reads the key from /wallet/public-keys.json. Switching to
-      # x509_san_dns would send the chain instead and require a leaf from
-      # WEBUILD/pki/ with this hostname as a SAN.
+      # pre-registered sends only a `kid`; the wallet reads the key from
+      # /wallet/public-keys.json. x509_san_dns would send the chain instead.
       VERIFIER_CLIENTIDPREFIX: ${VERIFIER_CLIENT_ID_PREFIX:?set in stack.env}
       VERIFIER_ORIGINALCLIENTID: ${VERIFIER_CLIENT_ID:?set in stack.env}
 
-      # Signs every request object. Required: the application has no
-      # generate-a-key option, which is why keystore-init exists.
-      #
-      # keytool -importkeystore gives the key entry the same password as the
-      # store, so both variables take the one secret.
+      # Signs every request object. keytool gives the key entry the store's
+      # password, so both variables take the one secret.
       VERIFIER_ACCESS_CERTIFICATE_KEYSTORE: file:///keystore/keystore.jks
       VERIFIER_ACCESS_CERTIFICATE_KEYSTORE_TYPE: jks
       VERIFIER_ACCESS_CERTIFICATE_KEYSTORE_PASSWORD: ${VERIFIER_KEYSTORE_PASSWORD}
@@ -140,33 +118,23 @@ services:
       # Must match the curve keystore-init generates: P-256 means ES256.
       VERIFIER_ACCESS_CERTIFICATE_SIGNING_ALGORITHM: ${VERIFIER_SIGNING_ALGORITHM:?set in stack.env}
 
-      # Required for the service to start at all: the list is non-nullable with
-      # no default. The registration certificate is an ETSI 119 475 signed JWT,
-      # a different artefact from the access certificate above.
+      # Required to start. The registration certificate is an ETSI 119 475
+      # signed JWT, a different artefact from the access certificate above.
       VERIFIER_INTENDEDUSES[0]_ID: ${VERIFIER_INTENDED_USE_ID:?set in stack.env}
       VERIFIER_INTENDEDUSES[0]_DESCRIPTION: ${VERIFIER_INTENDED_USE_DESCRIPTION:?set in stack.env}
       VERIFIER_INTENDEDUSES[0]_REGISTRATIONCERTIFICATE: ${VERIFIER_REGISTRATION_CERTIFICATE:?repository secret}
     volumes:
-      # Written by keystore-init, read here. Named, not a bind mount: a bind
-      # mount would need a directory created on the box by hand, and a missing
-      # source is silently created empty rather than erroring.
+      # Named, not a bind mount: nothing to create on the box by hand, and a
+      # missing bind source would be silently created empty.
       - access-keystore:/keystore:ro
-    # No healthcheck. The Paketo runtime image has no shell and no curl or wget
-    # (verified: /bin/sh, /bin/bash, /usr/bin/curl and /bin/busybox are all
-    # absent), so every form of `test:` compose accepts would fail. Same for the
-    # wallet provider's jib image, which also has none.
-    #
-    # The service does expose Spring Boot actuator at /actuator/health, which
-    # answers 200 with {"status":"UP"}. The deploy workflow checks it through
-    # the proxy instead, which is a better test anyway: it exercises the vhost
-    # rather than just the process.
+    # No healthcheck: the Paketo image has no shell and no HTTP client, so every
+    # form of `test:` fails. The deploy checks /actuator/health through the
+    # proxy instead.
     networks:
       - proxy-net
 
 volumes:
-  # The access certificate keystore. Generated once by keystore-init and kept
-  # thereafter: its public key is what the wallet uses to verify request
-  # objects, so replacing it invalidates anything already issued.
+  # Generated once by keystore-init; replacing it invalidates issued requests.
   access-keystore:
 
 networks:
