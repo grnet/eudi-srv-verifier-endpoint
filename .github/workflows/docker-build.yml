@@ -1,0 +1,146 @@
+# Build the container image and push it to GHCR.
+#
+# Build only. Deployment is a separate, manually triggered workflow, so a push
+# never changes what is running on a server.
+#
+# Upstream's publish-to-container-registry.yml triggers only on v*.*.* tags,
+# which this fork does not create, so it has never run here. This workflow sits
+# alongside it, untouched, and triggers on the branches the fork uses.
+#
+# There is no Dockerfile. The image is built by Spring Boot's bootBuildImage
+# using Paketo buildpacks, configured in build.gradle.kts. Note this differs
+# from eudi-srv-wallet-provider, which is also Kotlin/Spring but uses jib.
+#
+# Tagging matches the other repositories: by branch, by commit SHA, and as
+# `latest` on the default branch. The SHA tag is the one worth deploying, since
+# it names exactly one build.
+
+name: Docker build
+
+on:
+  push:
+    branches:
+      - grnet
+      - 'feat/**'
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    name: Build and push
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Java
+        uses: actions/setup-java@v6.0.1
+        with:
+          distribution: temurin
+          # Matches `java` in gradle/libs.versions.toml.
+          java-version: '25'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-read-only: ${{ github.ref != format('refs/heads/{0}', github.event.repository.default_branch) }}
+
+      # Pull requests from forks cannot read secrets, and publishing unreviewed
+      # code is not a default worth having. Those builds prove the image still
+      # builds and stop short of pushing.
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6.2.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+          # `source` links the package to this repository.
+          labels: |
+            org.opencontainers.image.description=Verifier endpoint for the EUDIW stack (GRNET fork). Acts as the relying party backend for OpenID4VP presentations.
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=Apache-2.0
+
+      # The bootBuildImage block in build.gradle.kts reads the registry
+      # credentials and DOCKER_METADATA_OUTPUT_TAGS from the environment, so
+      # every tag is pushed in a single invocation. metadata-action exports that
+      # variable itself; it is named here only to make the coupling visible.
+      - name: Build and push with bootBuildImage
+        if: github.event_name != 'pull_request'
+        env:
+          REGISTRY_URL: https://${{ env.REGISTRY }}
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          DOCKER_METADATA_OUTPUT_TAGS: ${{ steps.meta.outputs.tags }}
+          BP_OCI_CREATED: ${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+          BP_OCI_DESCRIPTION: ${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.description'] }}
+          BP_OCI_LICENSES: ${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.licenses'] }}
+          BP_OCI_REVISION: ${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.revision'] }}
+          BP_OCI_SOURCE: ${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.source'] }}
+          BP_OCI_TITLE: ${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.title'] }}
+          BP_OCI_URL: ${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.url'] }}
+          BP_OCI_VERSION: ${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
+          BP_OCI_REF_NAME: ${{ github.repository }}
+          BP_OCI_VENDOR: GRNET
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon bootBuildImage \
+            --imageName="$(printf '%s' "${{ steps.meta.outputs.tags }}" | head -1)" \
+            --imagePlatform linux/amd64 \
+            --publishImage
+
+      - name: Build image without pushing
+        if: github.event_name == 'pull_request'
+        run: |
+          ./gradlew --no-daemon bootBuildImage \
+            --imageName=eudi-srv-verifier-endpoint:pr-${{ github.event.number }} \
+            --imagePlatform linux/amd64
+
+      # A published image is only useful if it starts. Running it with no
+      # configuration must fail on the missing access certificate keystore,
+      # which VerifierContext requires before the application context is built.
+      # Reaching that failure proves the JVM started and the classes loaded, so
+      # a broken entrypoint or an incomplete classpath fails here, not at deploy.
+      - name: Smoke test the image
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          IMAGE=$(printf '%s' "${{ steps.meta.outputs.tags }}" | head -1)
+          echo "Testing $IMAGE"
+          docker pull "$IMAGE"
+
+          output=$(docker run --rm "$IMAGE" 2>&1 || true)
+
+          if printf '%s' "$output" | grep -q "verifier.access-certificate.keystore"; then
+            echo "Image starts and reaches configuration loading."
+          else
+            echo "::error::the image did not start as expected"
+            printf '%s\n' "$output" | head -40
+            exit 1
+          fi
