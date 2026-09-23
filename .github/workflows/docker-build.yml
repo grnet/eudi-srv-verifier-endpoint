@@ -122,11 +122,15 @@ jobs:
             --imageName=eudi-srv-verifier-endpoint:pr-${{ github.event.number }} \
             --imagePlatform linux/amd64
 
-      # A published image is only useful if it starts. Running it with no
-      # configuration must fail on the missing access certificate keystore,
-      # which VerifierContext requires before the application context is built.
-      # Reaching that failure proves the JVM started and the classes loaded, so
-      # a broken entrypoint or an incomplete classpath fails here, not at deploy.
+      # A published image is only useful if it starts. With no configuration the
+      # application must reach Spring's property binding and fail there, on the
+      # required `verifier.intendedUses`. Reaching that point proves the JVM
+      # started, the classes loaded and the entrypoint works, so a broken image
+      # fails here rather than at deploy.
+      #
+      # Verified locally against this exact image, 2026-09-23. The binding
+      # failure comes before the access certificate is read, so do not assert on
+      # the keystore: it is never reached.
       - name: Smoke test the image
         if: github.event_name != 'pull_request'
         run: |
@@ -137,10 +141,10 @@ jobs:
 
           output=$(docker run --rm "$IMAGE" 2>&1 || true)
 
-          if printf '%s' "$output" | grep -q "verifier.access-certificate.keystore"; then
-            echo "Image starts and reaches configuration loading."
+          if printf '%s' "$output" | grep -q "VerifierEndpointConfigurationProperties"; then
+            echo "Image starts and reaches configuration binding."
           else
             echo "::error::the image did not start as expected"
-            printf '%s\n' "$output" | head -40
+            printf '%s\n' "$output" | tail -40
             exit 1
           fi
