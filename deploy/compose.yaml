@@ -1,6 +1,6 @@
 # The verifier backend. See deploy/README.md.
 #
-# Use deploy.sh or the Deploy workflow, not compose directly.
+# Use the Deploy workflow, not compose directly.
 #
 # proxy-net belongs to eudi-srv-wallet-provider and must be up first.
 
