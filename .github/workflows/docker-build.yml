@@ -18,13 +18,11 @@
 name: Docker build
 
 on:
+  # No paths-ignore on push, so every commit gets an image Deploy can use.
   push:
     branches:
       - grnet
       - 'feat/**'
-    paths-ignore:
-      - '**.md'
-      - '.gitignore'
   pull_request:
     paths-ignore:
       - '**.md'

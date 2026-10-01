@@ -78,6 +78,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Fail early, with a reason, if the image is not in the registry yet.
+      - name: Check the image is built
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          set -uo pipefail
+          if err=$(docker buildx imagetools inspect "$IMAGE" 2>&1 >/dev/null); then
+            echo "found $IMAGE"
+          elif grep -q 'not found' <<<"$err"; then
+            echo "::error::$IMAGE is not in the registry. Wait for its Docker build to finish, or pass an image tag that exists."
+            exit 1
+          else
+            echo "$err"
+            echo "::error::could not look up $IMAGE"
+            exit 1
+          fi
+
       # config and known_hosts are committed under deploy/ssh/: hostnames, ports
       # and host keys are public data, and keeping them in git makes a change to
       # them reviewable. Only the private key is a secret.
@@ -173,17 +190,21 @@ jobs:
           if docker exec nginx-proxy nginx -t >/dev/null 2>&1; then
             echo "  ok"
           else
-            docker exec nginx-proxy nginx -t 2>&1 | sed 's/^/       /'
+            docker exec nginx-proxy nginx -t 2>&1 | sed 's/^/       /' || true
             fail=1
           fi
 
           host=$(grep -E '^VERIFIER_HOST=' deploy/stack.env | cut -d= -f2)
           path=$(grep -E '^VERIFIER_PATH=' deploy/stack.env | cut -d= -f2)
 
+          # Over https: port 80 answers almost everything with a 301.
+          # --connect-to keeps the edge hostname for SNI, so the certificate is
+          # checked too.
           probe() {
             docker run --rm --network proxy-net curlimages/curl:8.11.1 \
               -s -o /dev/null -w '%{http_code}' --max-time 15 \
-              -H "Host: $host" "http://nginx-proxy$1" 2>/dev/null || echo 000
+              --connect-to "$host:443:nginx-proxy:443" \
+              "https://$host$1" 2>/dev/null || echo 000
           }
 
           # The JVM needs time before anything answers, so retry rather than
