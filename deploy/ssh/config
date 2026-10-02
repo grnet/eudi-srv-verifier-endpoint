@@ -1,0 +1,21 @@
+# SSH client config for the deploy workflow, installed to ~/.ssh/config on the
+# runner. Committed because hostnames, ports and usernames are not secrets; only
+# the private key is, and that comes from the SSH_KEY environment secret.
+#
+# The alias is the generic `target` so DOCKER_HOST=ssh://target and every ssh
+# line in the workflow read the same regardless of which box is behind it.
+#
+# This file names one box and no other, so a production deploy has no alias that
+# resolves anywhere else.
+
+Host target
+    HostName 3.69.83.252
+    Port 22
+    User ubuntu
+    IdentityFile ~/.ssh/eudiw-deploy
+    IdentitiesOnly yes
+    StrictHostKeyChecking yes
+    UserKnownHostsFile ~/.ssh/known_hosts
+    ServerAliveInterval 30
+    ServerAliveCountMax 6
+    LogLevel INFO
