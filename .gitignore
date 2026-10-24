@@ -38,3 +38,6 @@ out/
 
 ### Kotlin ###
 .kotlin
+
+# macOS Finder metadata
+.DS_Store
