@@ -123,6 +123,18 @@ services:
       VERIFIER_INTENDEDUSES[0]_ID: ${VERIFIER_INTENDED_USE_ID:?set in stack.env}
       VERIFIER_INTENDEDUSES[0]_DESCRIPTION: ${VERIFIER_INTENDED_USE_DESCRIPTION:?set in stack.env}
       VERIFIER_INTENDEDUSES[0]_REGISTRATIONCERTIFICATE: ${VERIFIER_REGISTRATION_CERTIFICATE:?repository secret}
+
+      # Every presented credential is looked up here by vct or docType before
+      # anything else; with none configured, every presentation fails with
+      # "Could not find Attestation Classification". Copied from the Commission's
+      # verifier-backend.eudiw.dev/utilities/attestationClassifications on
+      # 2026-10-29.
+      VERIFIER_ATTESTATIONCLASSIFICATIONS: '{"pid":{"vcts":["urn:eudi:pid:1","urn:eudi:pid:de:1"],"docTypes":["eu.europa.ec.eudi.pid.1"]},"qeaa":{"vcts":[],"docTypes":[]},"pubeaa":{"vcts":["urn:eudi:ehic:1","urn:eu.europa.ec.eudi:hiid:1","urn:eu.europa.ec.eudi:pda1:1","urn:eu.europa.ec.eudi:por:1","urn:eu.europa.ec.eudi:tax:1","urn:eu.europa.ec.eudi:tax:1:1"],"docTypes":["eu.europa.ec.eudi.cor.1","eu.europa.ec.eudi.ehic.1","eu.europa.ec.eudi.hiid.1","eu.europa.ec.eudi.pda1.1","org.iso.23220.2.photoid.1","eu.europa.ec.eudi.por.1","eu.europa.ec.eudi.tax.1","org.iso.7367.2.1.mVC"]},"eaa":[{"useCase":"mDL","vcts":[],"docTypes":["org.iso.18013.5.1.mDL"]},{"useCase":"learningCredential","vcts":["urn:eu.europa.ec.eudi:learning:credential:1"],"docTypes":[]},{"useCase":"diploma","vcts":["urn:eu.europa.ec.eudi:diploma:1:1"],"docTypes":[]},{"useCase":"employeeID","vcts":[],"docTypes":["eu.europa.ec.eudi.employee.1"]},{"useCase":"iban","vcts":["urn:eu.europa.ec.eudi:iban:1"],"docTypes":["eu.europa.ec.eudi.iban.1"]},{"useCase":"loyaltyCard","vcts":[],"docTypes":["eu.europa.ec.eudi.loyalty.1"]},{"useCase":"msisdn","vcts":["urn:eu.europa.ec.eudi:msisdn:1"],"docTypes":["eu.europa.ec.eudi.msisdn.1"]},{"useCase":"seaFarer","vcts":[],"docTypes":["eu.europa.ec.eudi.seafarer.1"]},{"useCase":"bookingReservation","vcts":[],"docTypes":["org.iso.18013.5.1.reservation"]}]}'
+
+      # Spring WebFlux buffers at most 256 KB of a request body by default. A
+      # direct_post with portraits or several credentials is bigger and got a 500
+      # (DataBufferLimitException).
+      SPRING_CODEC_MAXINMEMORYSIZE: 10MB
     volumes:
       # Named, not a bind mount: nothing to create on the box by hand, and a
       # missing bind source would be silently created empty.
