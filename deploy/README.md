@@ -45,10 +45,11 @@ startup with `access certificate must not be self-signed`. So the init container
 mints a throwaway CA and signs the leaf with it. Upstream's dev keystore is a
 chain for the same reason.
 
-That CA is a local convenience, not a trust anchor. Under `pre-registered` the
-chain is never sent to the wallet, so nothing outside the container ever sees
-it. If we move to `x509_san_dns` the chain does go to the wallet, and then it
-has to come from `WEBUILD/pki/` instead.
+That CA is a local convenience, not a trust anchor. Under `x509_hash`, which
+this stack uses, the chain goes to the wallet in the request object, so a
+wallet that checks it against the Commission's list of access certificate
+providers will call it untrusted. Passing those wallets needs a leaf from a
+provider on that list. See the client id prefix section below.
 
 **Do not use upstream's `src/main/resources/keystore.jks`.** It is committed to
 every clone of this repository, so its private key is public. It is also P-521
@@ -122,7 +123,7 @@ becomes `VERIFIER_PUBLICURL`, and list entries take the
 | Variable | What it does |
 | --- | --- |
 | `VERIFIER_PUBLICURL` | Written into `request_uri` and `response_uri` inside the signed request object. The wallet resolves these, so it cannot be rewritten after issuance. |
-| `VERIFIER_CLIENTIDPREFIX` | `pre-registered` here. See below. |
+| `VERIFIER_CLIENTIDPREFIX` | `x509_hash` here. See below. |
 | `VERIFIER_ACCESS_CERTIFICATE_*` | The keystore holding the request-object signing key. |
 | `VERIFIER_INTENDEDUSES[0]_*` | Why the verifier is asking. Required. |
 
@@ -136,7 +137,8 @@ survives Spring's URI building and no `SCRIPT_NAME` equivalent is needed.
 
 ## The client id prefix, and what the keystore has to be
 
-`pre-registered` is the upstream default and what this stack uses.
+`x509_hash` is what this stack uses. Upstream's default is `pre-registered`,
+which this stack used until October 2026.
 
 Under `pre-registered` the signed request object carries only a `kid`
 (`CreateJarNimbus.kt:90`). The certificate is never sent; the wallet is expected
@@ -144,10 +146,21 @@ to know the verifier out of band and reads the key from
 `/verifier/wallet/public-keys.json`. So the keystore only has to hold a usable
 EC key. Nothing validates a chain and nothing checks a SAN.
 
+That only works with a wallet built to know us, and none is: wallets at the
+EUDI Wallets Launchpad refused `Verifier` as an unsupported client id prefix,
+and GRNET's own wallet accepts only `x509_san_dns` and `x509_hash`.
+
 Under `x509_san_dns` or `x509_hash` the certificate chain goes into the JWS
-header and the wallet validates it. That needs a leaf issued from
-`WEBUILD/pki/` with `demo.eudiw.grnet.gr` as a SAN. Switching is a PKI ceremony
-plus a `stack.env` change, not a redesign.
+header and the wallet validates it. Under `x509_hash` the client id is the
+base64url SHA-256 of the leaf, which `/verifier/wallet/public-keys.json`
+publishes as `x5t#S256`; under `x509_san_dns` it is a DNS SAN of the leaf,
+`demo.eudiw.grnet.gr`. The leaf `keystore-init` generates satisfies both, so the
+switch was a `stack.env` change. It has to be redone if the keystore volume is
+ever recreated, since the hash changes with the leaf.
+
+The chain still ends at the throwaway CA. A wallet that checks it against the
+Commission's list of access certificate providers (`wrpac-providers`) rejects
+it, so for those the leaf has to come from a provider on that list.
 
 `okeanos-v6` carried a commit appending `"Verifier"` to
 `DEFAULT_CLIENT_ID_PREFIXES_SUPPORTED`, an OpenID4VP spec constant. That was a
