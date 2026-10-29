@@ -133,8 +133,9 @@ services:
 
       # Spring WebFlux buffers at most 256 KB of a request body by default. A
       # direct_post with portraits or several credentials is bigger and got a 500
-      # (DataBufferLimitException).
-      SPRING_CODEC_MAXINMEMORYSIZE: 10MB
+      # (DataBufferLimitException). Spring Boot 4 reads spring.http.codecs.*;
+      # the older spring.codec.* name is ignored.
+      SPRING_HTTP_CODECS_MAXINMEMORYSIZE: 10MB
     volumes:
       # Named, not a bind mount: nothing to create on the box by hand, and a
       # missing bind source would be silently created empty.
