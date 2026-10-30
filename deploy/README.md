@@ -15,8 +15,9 @@ One thing. **The edge must be up:** nginx-proxy, acme-companion and the
 `proxy-net` network are defined in `eudi-srv-wallet-provider`, not here. Deploy
 that stack first. The preflight step checks and stops if `proxy-net` is missing.
 
-Nothing has to be placed on the box by hand. The keystore is generated on first
-deploy, as below.
+On a fresh box nothing has to be placed by hand: a keystore is generated on
+first deploy, as below. The live one, though, holds the registrar's WRPAC,
+imported by hand ("Live: the registrar's WRPAC" below).
 
 ## The access certificate keystore
 
