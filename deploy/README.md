@@ -49,7 +49,7 @@ That CA is a local convenience, not a trust anchor. Under `x509_hash`, which
 this stack uses, the chain goes to the wallet in the request object, so a
 wallet that checks it against the Commission's list of access certificate
 providers will call it untrusted. Passing those wallets needs a leaf from a
-provider on that list. See the client id prefix section below.
+provider on that list, which is what runs now; see below.
 
 **Do not use upstream's `src/main/resources/keystore.jks`.** It is committed to
 every clone of this repository, so its private key is public. It is also P-521
@@ -59,6 +59,44 @@ Verified end to end before this was written: `keystore-init` generates a
 P-256 key with `DNSName: demo.eudiw.grnet.gr`, skips on a second run, and the
 service starts with it and signs a request object with `ES256`, publishing the
 key at `/wallet/public-keys.json`.
+
+### Live: the registrar's WRPAC (since 30 October 2026)
+
+The keystore in the volume no longer holds what `keystore-init` generated. It
+holds the WRPAC the Launchpad registrar
+(`itb.registry.serviceproviders.eudiw.dev`) issued for GRNET:
+`CN=KEP, O=GRNET S.A., organizationIdentifier=VATGR-EL094536469`, issued by
+`PID Issuer CA 02`, which is on the Commission's `wrpac-providers` list, valid
+to October 2028, P-256. The leaf alone is in the chain; wallets find the CA on
+the list. Its only SAN is a URI, so it works with `x509_hash`, not
+`x509_san_dns`.
+
+It was imported by hand, since `keystore-init` skips an existing keystore. The
+generated keystore was kept beside it in the volume as
+`keystore.jks.keystore-init-<timestamp>`. To import a WRPAC again (a renewal,
+or a recreated volume), with the registrar's `.p12` and its password, from a
+laptop that has `deploy/eudiw-deploy-secrets.txt`:
+
+    set -a; . deploy/eudiw-deploy-secrets.txt; set +a
+    export VERIFIER_KEYSTORE_ALIAS=access_certificate P12_PASS=<the .p12 password>
+    DOCKER_HOST=ssh://aws-gfour docker run --rm -i \
+        -e P12_PASS -e VERIFIER_KEYSTORE_ALIAS -e VERIFIER_KEYSTORE_PASSWORD \
+        -v eudiw-verifier_access-keystore:/keystore eclipse-temurin:25-jdk sh -euc '
+      cat > /tmp/wrpac.p12
+      cp -p /keystore/keystore.jks /keystore/keystore.jks.bak-$(date -u +%Y%m%d-%H%M%S)
+      src=$(keytool -list -keystore /tmp/wrpac.p12 -storetype PKCS12 -storepass "$P12_PASS" \
+          | awk -F, "/PrivateKeyEntry/ {print \$1; exit}")
+      keytool -importkeystore -noprompt \
+          -srckeystore /tmp/wrpac.p12 -srcstoretype PKCS12 -srcstorepass "$P12_PASS" \
+          -srcalias "$src" -srckeypass "$P12_PASS" \
+          -destkeystore /tmp/new.jks -deststoretype JKS \
+          -deststorepass "$VERIFIER_KEYSTORE_PASSWORD" \
+          -destalias "$VERIFIER_KEYSTORE_ALIAS" -destkeypass "$VERIFIER_KEYSTORE_PASSWORD"
+      mv /tmp/new.jks /keystore/keystore.jks && chmod 644 /keystore/keystore.jks' < wrpac.p12
+
+Then set `VERIFIER_CLIENT_ID` in `stack.env` to the new leaf's hash
+(`base64url(SHA-256(DER))`, no padding) and deploy. The service refuses to
+start if the two don't match.
 
 ## Repository secrets
 
@@ -158,9 +196,11 @@ publishes as `x5t#S256`; under `x509_san_dns` it is a DNS SAN of the leaf,
 switch was a `stack.env` change. It has to be redone if the keystore volume is
 ever recreated, since the hash changes with the leaf.
 
-The chain still ends at the throwaway CA. A wallet that checks it against the
-Commission's list of access certificate providers (`wrpac-providers`) rejects
-it, so for those the leaf has to come from a provider on that list.
+With the generated leaf, the chain ended at the throwaway CA, and wallets that
+check it against the Commission's list of access certificate providers
+(`wrpac-providers`) rejected it. The registrar's WRPAC, live since 30 October
+2026, chains to a CA on that list. It has no DNS SAN, so only `x509_hash` works
+with it.
 
 `okeanos-v6` carried a commit appending `"Verifier"` to
 `DEFAULT_CLIENT_ID_PREFIXES_SUPPORTED`, an OpenID4VP spec constant. That was a
